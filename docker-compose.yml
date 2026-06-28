@@ -1,11 +1,26 @@
+# Standalone NVIDIA GPU Compose file for stack-management UIs (Portainer,
+# Coolify, Dockhand, etc.) that accept only a single Compose file and do not
+# reliably honor COMPOSE_FILE or multiple `-f` overlays.
+#
+# This is equivalent to: docker-compose.yml + docker/gpu.nvidia.yml.
+# The base docker-compose.yml plus the docker/gpu.nvidia.yml overlay remain
+# the source of truth — CLI users should keep using the COMPOSE_FILE overlay
+# workflow. Keep this file in sync with both when either changes.
+#
+# Requires the NVIDIA Container Toolkit on the host. See docker/gpu.nvidia.yml
+# for setup details.
 services:
   odysseus:
     build: .
+    image: odysseus:local
+    container_name: odysseus
     ports:
-      - "${APP_BIND:-127.0.0.1}:${APP_PORT:-7000}:7000"
+      # VORHER: - "${APP_BIND:-127.0.0.1}:${APP_PORT:-7000}:7000"
+      # NACHHER: Bindet standardmäßig an 0.0.0.0, damit das NAS darauf zugreifen kann
+      - "${APP_PORT:-7000}:7000"
     volumes:
       - ${APP_DATA_DIR:-./data}:/app/data:z
-      - ${APP_LOGS_DIR:-./logs}:/app/logs:z
+      - ${APP_DATA_DIR:-./logs}:/app/logs:z
       # Cookbook remote-server SSH identity. Odysseus can generate a key here;
       # add the shown public key to each remote server's authorized_keys.
       - ${APP_DATA_DIR:-./data}/ssh:/app/.ssh:z
@@ -46,14 +61,16 @@ services:
       - LOCALHOST_BYPASS=${LOCALHOST_BYPASS:-false}
       - ODYSSEUS_ADMIN_USER=${ODYSSEUS_ADMIN_USER:-admin}
       - ODYSSEUS_ADMIN_PASSWORD=${ODYSSEUS_ADMIN_PASSWORD:-}
-      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost,http://127.0.0.1}
-      - SECURE_COOKIES=${SECURE_COOKIES:-false}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost,http://127.0.0.1,https://odysseus.dirax.srv64.de}  # Domain hinzugefügt
+      - SECURE_COOKIES=true  #${SECURE_COOKIES:-false}
       - EMBEDDING_URL=${EMBEDDING_URL:-}
       - EMBEDDING_MODEL=${EMBEDDING_MODEL:-}
       - EMBEDDING_API_KEY=${EMBEDDING_API_KEY:-}
       - FASTEMBED_MODEL=${FASTEMBED_MODEL:-sentence-transformers/all-MiniLM-L6-v2}
       - FASTEMBED_CACHE_PATH=${FASTEMBED_CACHE_PATH:-}
       - CLEANUP_INTERVAL_HOURS=${CLEANUP_INTERVAL_HOURS:-24}
+      - ODYSSEUS_ADMIN_USER=${ODYSSEUS_ADMIN_USER}
+      - ODYSSEUS_ADMIN_PASSWORD=${ODYSSEUS_ADMIN_PASSWORD}
       - ODYSSEUS_INPROCESS_POLLERS=${ODYSSEUS_INPROCESS_POLLERS:-1}
       - ODYSSEUS_INPROCESS_TASKS=${ODYSSEUS_INPROCESS_TASKS:-1}
       - ODYSSEUS_SCRIPT_HOST=${ODYSSEUS_SCRIPT_HOST:-localhost}
@@ -80,19 +97,31 @@ services:
       # Find yours with:  id -u  /  id -g
       - PUID=${PUID:-1000}
       - PGID=${PGID:-1000}
+      # NVIDIA overlay (from docker/gpu.nvidia.yml).
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     depends_on:
       searxng:
         condition: service_healthy
       chromadb:
         condition: service_started
     restart: unless-stopped
+    # NVIDIA overlay (from docker/gpu.nvidia.yml).
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
 
   chromadb:
     image: docker.io/chromadb/chroma:latest
+    container_name: odysseus-db
     ports:
       - "${CHROMADB_BIND:-127.0.0.1}:8100:8000"
     volumes:
-      - chromadb-data:/chroma/chroma
+      - ${APP_DATA_DIR:-./chromadb}/chromadb-data:/chroma/chroma
     environment:
       - ANONYMIZED_TELEMETRY=FALSE
     restart: unless-stopped
@@ -104,6 +133,7 @@ services:
     # `KeyError: 'default_doi_resolver'`, failing the healthcheck (issue #1414).
     # Bump this deliberately after verifying a newer tag boots clean.
     image: docker.io/searxng/searxng:2026.5.31-7159b8aed
+    container_name: odysseus-searchengine
     entrypoint:
       - /bin/sh
       - -c
@@ -120,7 +150,7 @@ services:
     ports:
       - "127.0.0.1:8080:8080"
     volumes:
-      - searxng-data:/etc/searxng
+      - ${APP_DATA_DIR:-./searxng}/searxng-data:/etc/searxng
       - ./config/searxng/settings.yml:/tmp/searxng-settings.yml.template:ro,z
     environment:
       - SEARXNG_BASE_URL=http://localhost:8080/
@@ -149,16 +179,12 @@ services:
 
   ntfy:
     image: docker.io/binwiederhier/ntfy
+    container_name: odysseus-messenger
     command: serve
     ports:
       - "${NTFY_BIND:-127.0.0.1}:8091:80"
     volumes:
-      - ntfy-cache:/var/cache/ntfy
+      - ${APP_DATA_DIR:-./ntfy}/ntfy-cache:/var/cache/ntfy
     environment:
       - NTFY_BASE_URL=${NTFY_BASE_URL:-http://localhost:8091}
     restart: unless-stopped
-
-volumes:
-  searxng-data:
-  chromadb-data:
-  ntfy-cache:
